@@ -1,0 +1,5 @@
+{
+  "name": "PHP-NoSQL-Store Pro",
+  "description": "A comprehensive developer toolkit for managing a file-based JSON database with a MongoDB-style query engine, including a fully-featured PHP backend implementation and a React-based interactive simulation environment.",
+  "requestFramePermissions": []
+}
