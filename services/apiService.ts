@@ -16,8 +16,6 @@ class ApiService {
       url.searchParams.append('collection', collection);
     }
 
-    // Add a cache buster timestamp to ensure we get fresh data from the remote server
-    // This is crucial for reflecting deletions and updates immediately.
     url.searchParams.append('_t', Date.now().toString());
 
     const options: RequestInit = {
@@ -33,25 +31,20 @@ class ApiService {
 
     try {
       const response = await fetch(url.toString(), options);
+      const responseText = await response.text();
       
-      if (!response.ok) {
-        let errorMessage = `HTTP error ${response.status}`;
-        try {
-          const errorJson = await response.json();
-          errorMessage = errorJson.error || errorMessage;
-        } catch (e) {
-          // ignore parsing error if response is not JSON
-        }
-        throw new Error(errorMessage);
-      }
-      
-      const result = await response.json();
-
-      if (!result.success) {
-        throw new Error(result.error || 'API Request failed');
+      let result;
+      try {
+        result = JSON.parse(responseText);
+      } catch (e) {
+        console.error("Non-JSON Response received:", responseText);
+        throw new Error(`Invalid server response (500 or Syntax Error). Check console for raw output.`);
       }
 
-      // Return the whole result object so callers can access specific fields (data, deleted, etc.)
+      if (!response.ok || !result.success) {
+        throw new Error(result.error || `Request failed with status ${response.status}`);
+      }
+
       return result;
     } catch (err) {
       console.error(`API Request failed for action "${action}":`, err);
@@ -68,64 +61,66 @@ class ApiService {
     const formData = new FormData();
     formData.append('file', file);
 
-    const response = await fetch(url.toString(), {
-      method: 'POST',
-      body: formData,
-    });
+    try {
+      const response = await fetch(url.toString(), {
+        method: 'POST',
+        body: formData,
+      });
 
-    if (!response.ok) {
-      throw new Error(`Upload failed: ${response.statusText}`);
+      const responseText = await response.text();
+      let result;
+      try {
+        result = JSON.parse(responseText);
+      } catch (e) {
+        console.error("Upload Error Raw Response:", responseText);
+        throw new Error("Upload failed: Server returned non-JSON response.");
+      }
+
+      if (!result.success) {
+        throw new Error(result.error || 'Upload failed');
+      }
+
+      return result;
+    } catch (err) {
+      console.error("Upload Request Error:", err);
+      throw err;
     }
-
-    const result = await response.json();
-    if (!result.success) {
-      throw new Error(result.error || 'Upload failed');
-    }
-
-    return result;
   }
 
-  // Fetches list of collection names from the remote PHP server
+  // Fetches list of collection names
   async listCollections(): Promise<string[]> {
     const res = await this.request('list');
-    return res.data;
+    return res.data || [];
   }
 
   // Fetches all documents for a specific collection
   async getCollectionDocs(collection: string): Promise<Document[]> {
-    // Calling 'find' with an empty object returns all documents in the JsonDB engine
     const res = await this.request('find', collection, {});
-    return res.data;
+    return res.data || [];
   }
 
-  // Creates a new empty collection on the remote server
   async createCollection(collection: string): Promise<void> {
     await this.request('create', collection);
   }
 
-  // Drops (deletes) an entire collection from the remote server
   async dropCollection(collection: string): Promise<void> {
     await this.request('drop', collection);
   }
 
-  // Finds documents matching a specific MongoDB-style query object
   async find(collection: string, query: any): Promise<Document[]> {
     const res = await this.request('find', collection, query);
-    return res.data;
+    return res.data || [];
   }
 
-  // Inserts a new document into a remote collection
   async insert(collection: string, document: any): Promise<Document> {
     const res = await this.request('insert', collection, document);
     return res.data;
   }
 
-  // Deletes documents matching a specific query and returns the count of deleted items
   async delete(collection: string, query: any): Promise<number> {
     const res = await this.request('delete', collection, query);
-    return res.deleted;
+    return res.deleted || 0;
   }
 }
 
-// Export the singleton instance of ApiService
 export const apiService = new ApiService();

@@ -71,6 +71,7 @@ async function uploadFile(file: File) {
 export const PHP_SOURCE_CODE = `<?php
 /**
  * JsonDB.php - A MongoDB-style File-based JSON Database Engine
+ * Strictly PHP 5.3 Compatible
  */
 error_reporting(E_ALL);
 ini_set('display_errors', 0); 
@@ -78,61 +79,90 @@ ini_set('display_errors', 0);
 class JsonDB {
     private $dbPath;
 
-    public function __construct($dbPath = './db/') {
-        // Use absolute path for reliability
-        $this->dbPath = realpath(dirname(__FILE__)) . '/' . trim($dbPath, '/') . '/';
+    public function __construct($dbRelativePath) {
+        if ($dbRelativePath === null) {
+            $dbRelativePath = 'db';
+        }
+        $baseDir = dirname(__FILE__);
+        $targetDir = $baseDir . DIRECTORY_SEPARATOR . trim($dbRelativePath, DIRECTORY_SEPARATOR);
         
-        if (!is_dir($this->dbPath)) {
-            if (!mkdir($this->dbPath, 0777, true)) {
+        if (!is_dir($targetDir)) {
+            if (!@mkdir($targetDir, 0777, true)) {
                 $err = error_get_last();
-                throw new Exception("Could not create database directory at: " . $this->dbPath . ". Error: " . ($err['message'] ?? 'Unknown'));
+                $msg = (isset($err) && isset($err['message'])) ? $err['message'] : 'Check permissions';
+                throw new Exception("Could not create database directory: " . $msg);
             }
-            chmod($this->dbPath, 0777);
+            @chmod($targetDir, 0777);
         }
         
-        if (!is_writable($this->dbPath)) {
-            throw new Exception("Database directory is NOT writable: " . $this->dbPath . ". Please CHMOD 777 this folder.");
+        if (!is_writable($targetDir)) {
+            throw new Exception("Database directory is NOT writable: " . $targetDir);
         }
+
+        $this->dbPath = $targetDir . DIRECTORY_SEPARATOR;
     }
 
     private function getFilePath($collection) {
-        return $this->dbPath . preg_replace('/[^a-z0-9_]/i', '', $collection) . '.json';
+        $safeName = preg_replace('/[^a-z0-9_]/i', '', $collection);
+        if (empty($safeName)) {
+            throw new Exception("Invalid collection name");
+        }
+        return $this->dbPath . $safeName . '.json';
     }
 
     public function listCollections() {
         $files = glob($this->dbPath . '*.json');
-        if ($files === false) return [];
-        return array_values(array_unique(array_map(function($f) {
-            return basename($f, '.json');
-        }, $files)));
+        if ($files === false) {
+            return array();
+        }
+        $names = array();
+        foreach ($files as $f) {
+            $names[] = basename($f, '.json');
+        }
+        return array_values(array_unique($names));
     }
 
     private function readCollection($collection) {
         $file = $this->getFilePath($collection);
-        if (!file_exists($file)) return [];
-        $content = file_get_contents($file);
-        if ($content === false) return [];
+        if (!file_exists($file)) {
+            return array();
+        }
+        $content = @file_get_contents($file);
+        if ($content === false) {
+            return array();
+        }
         $data = json_decode($content, true);
-        return is_array($data) ? $data : [];
+        if (is_array($data)) {
+            return $data;
+        } else {
+            return array();
+        }
     }
 
     private function writeCollection($collection, $data) {
         $file = $this->getFilePath($collection);
-        $json = json_encode($data, JSON_PRETTY_PRINT);
-        if (file_put_contents($file, $json) === false) {
+        if (defined('JSON_PRETTY_PRINT')) {
+            $json = json_encode($data, JSON_PRETTY_PRINT);
+        } else {
+            $json = json_encode($data);
+        }
+        
+        if (@file_put_contents($file, $json) === false) {
             $err = error_get_last();
-            throw new Exception("Failed to write to " . $file . ". Error: " . ($err['message'] ?? 'Unknown'));
+            $msg = (isset($err) && isset($err['message'])) ? $err['message'] : 'Write failed';
+            throw new Exception("Failed to write to data store: " . $msg);
         }
     }
 
     public function createCollection($collection) {
-        if (empty($collection)) throw new Exception("Collection name cannot be empty");
+        if (empty($collection)) {
+            throw new Exception("Collection name cannot be empty");
+        }
         $file = $this->getFilePath($collection);
         if (!file_exists($file)) {
-            $this->writeCollection($collection, []);
+            $this->writeCollection($collection, array());
         } else {
-            // Even if it exists, ensure we can touch it
-            touch($file);
+            @touch($file);
         }
         return true;
     }
@@ -147,13 +177,22 @@ class JsonDB {
         return $document;
     }
 
-    public function find($collection, $query = []) {
+    public function find($collection, $query) {
+        if ($query === null) {
+            $query = array();
+        }
         $data = $this->readCollection($collection);
-        if (empty($query)) return $data;
+        if (empty($query)) {
+            return $data;
+        }
 
-        return array_values(array_filter($data, function($doc) use ($query) {
-            return $this->match($doc, $query);
-        }));
+        $results = array();
+        foreach ($data as $doc) {
+            if ($this->match($doc, $query)) {
+                $results[] = $doc;
+            }
+        }
+        return $results;
     }
 
     private function match($doc, $query) {
@@ -162,17 +201,17 @@ class JsonDB {
 
             if (is_array($criteria)) {
                 foreach ($criteria as $op => $expected) {
-                    switch ($op) {
-                        case '$eq': if ($value !== $expected) return false; break;
-                        case '$ne': if ($value === $expected) return false; break;
-                        case '$gt': if ($value <= $expected) return false; break;
-                        case '$lt': if ($value >= $expected) return false; break;
-                        case '$regex': if (!preg_match($expected, (string)$value)) return false; break;
-                        case '$in': if (!in_array($value, $expected)) return false; break;
-                    }
+                    if ($op == '$eq') { if ($value !== $expected) { return false; } }
+                    else if ($op == '$ne') { if ($value === $expected) { return false; } }
+                    else if ($op == '$gt') { if ($value <= $expected) { return false; } }
+                    else if ($op == '$lt') { if ($value >= $expected) { return false; } }
+                    else if ($op == '$regex') { if (!@preg_match($expected, (string)$value)) { return false; } }
+                    else if ($op == '$in') { if (!is_array($expected) || !in_array($value, $expected)) { return false; } }
                 }
             } else {
-                if ($value !== $criteria) return false;
+                if ($value !== $criteria) {
+                    return false;
+                }
             }
         }
         return true;
@@ -182,36 +221,49 @@ class JsonDB {
         $data = $this->readCollection($collection);
         $modifiedCount = 0;
 
-        foreach ($data as &$doc) {
+        foreach ($data as $idx => $doc) {
             if ($this->match($doc, $query)) {
                 if (isset($update['$set'])) {
-                    foreach ($update['$set'] as $k => $v) $doc[$k] = $v;
+                    foreach ($update['$set'] as $k => $v) {
+                        $data[$idx][$k] = $v;
+                    }
                 }
                 if (isset($update['$unset'])) {
-                    foreach ($update['$unset'] as $k => $v) unset($doc[$k]);
+                    foreach ($update['$unset'] as $k => $v) {
+                        unset($data[$idx][$k]);
+                    }
                 }
                 $modifiedCount++;
             }
         }
 
-        $this->writeCollection($collection, $data);
+        if ($modifiedCount > 0) {
+            $this->writeCollection($collection, $data);
+        }
         return $modifiedCount;
     }
 
     public function delete($collection, $query) {
         $data = $this->readCollection($collection);
         $beforeCount = count($data);
-        $data = array_values(array_filter($data, function($doc) use ($query) {
-            return !$this->match($doc, $query);
-        }));
-        $this->writeCollection($collection, $data);
-        return $beforeCount - count($data);
+        $newData = array();
+        foreach ($data as $doc) {
+            if (!$this->match($doc, $query)) {
+                $newData[] = $doc;
+            }
+        }
+        
+        $deletedCount = $beforeCount - count($newData);
+        if ($deletedCount > 0) {
+            $this->writeCollection($collection, $newData);
+        }
+        return $deletedCount;
     }
 
     public function drop($collection) {
         $file = $this->getFilePath($collection);
         if (file_exists($file)) {
-            if (!unlink($file)) {
+            if (!@unlink($file)) {
                 throw new Exception("Failed to delete " . $file);
             }
             return true;
@@ -219,130 +271,159 @@ class JsonDB {
         return false;
     }
 }
-?>
 `;
 
 export const API_SOURCE_CODE = `<?php
 /**
- * api.php - REST Interface for JsonDB with File Upload support
+ * api.php - REST Interface for JsonDB
+ * Strictly PHP 5.3 Compatible
  */
 
-// Handle CORS early
-header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: GET, POST, OPTIONS, DELETE');
-header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With');
+// 1. Headers
+header("Access-Control-Allow-Origin: *");
+header("Access-Control-Allow-Methods: GET, POST, OPTIONS, PUT, DELETE");
+header("Access-Control-Allow-Headers: Content-Type, Access-Control-Allow-Headers, Authorization, X-Requested-With");
+header('Content-Type: application/json');
 
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    http_response_code(204);
+if ($_SERVER['REQUEST_METHOD'] == 'OPTIONS') {
     exit;
 }
 
-header('Content-Type: application/json');
+error_reporting(E_ALL);
+ini_set('display_errors', 0);
 
-// Convert PHP errors to exceptions
-set_error_handler(function($severity, $message, $file, $line) {
-    if (!(error_reporting() & $severity)) return;
-    throw new ErrorException($message, 0, $severity, $file, $line);
-});
+function send_api_error_response($msg) {
+    header("HTTP/1.1 500 Internal Server Error");
+    echo json_encode(array(
+        'success' => false,
+        'error' => $msg
+    ));
+    exit;
+}
 
 try {
-    if (!file_exists('JsonDB.php.txt')) {
-        throw new Exception("Backend core file 'JsonDB.php.txt' missing from " . realpath(dirname(__FILE__)));
+    $basePath = dirname(__FILE__);
+    $corePath = $basePath . DIRECTORY_SEPARATOR . 'JsonDB.php';
+    
+    if (!file_exists($corePath)) {
+        throw new Exception("Backend core file 'JsonDB.php' missing");
     }
-    require_once 'JsonDB.php.txt';
+    require_once $corePath;
 
-    $db = new JsonDB();
-    $action = $_GET['action'] ?? 'find';
-    $collection = $_GET['collection'] ?? '';
-
-    // Handle JSON inputs for CRUD
-    $inputData = file_get_contents('php://input');
-    $input = json_decode($inputData, true) ?? [];
-
-    switch ($action) {
-        case 'upload':
-            if (!isset($_FILES['file'])) throw new Exception("No file uploaded");
-            $file = $_FILES['file'];
-            $allowed = ['wav', 'mp4', 'jpg', 'png', 'jpeg'];
-            $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
-            if (!in_array($ext, $allowed)) throw new Exception("File type not allowed: $ext");
-            
-            $uploadDir = 'uploads/';
-            if (!is_dir($uploadDir)) {
-                mkdir($uploadDir, 0777, true);
-                chmod($uploadDir, 0777);
-            }
-            
-            $newName = uniqid('media_', true) . '.' . $ext;
-            $target = $uploadDir . $newName;
-            
-            if (move_uploaded_file($file['tmp_name'], $target)) {
-                $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? "https" : "http";
-                $host = $_SERVER['HTTP_HOST'];
-                $requestUri = $_SERVER['REQUEST_URI'];
-                $dir = dirname($requestUri);
-                // Clean up directory path for the URL
-                $dir = ($dir === '\\' || $dir === '/') ? '' : $dir;
-                $url = "$protocol://$host$dir/$target";
-                
-                echo json_encode([
-                    'success' => true, 
-                    'url' => $url, 
-                    'filename' => $file['name'], 
-                    'stored_name' => $newName,
-                    'mime' => $file['type'],
-                    'size' => $file['size']
-                ]);
-            } else {
-                throw new Exception("Failed to save uploaded file. Check folder permissions.");
-            }
-            break;
-
-        case 'list':
-            $cols = $db->listCollections();
-            echo json_encode(['success' => true, 'data' => $cols, 'count' => count($cols)]);
-            break;
-        case 'create':
-            if (empty($collection)) throw new Exception("Collection name required");
-            $db->createCollection($collection);
-            echo json_encode(['success' => true, 'message' => "Collection $collection created"]);
-            break;
-        case 'insert':
-            if (empty($collection)) throw new Exception("Collection name required for insert");
-            $result = $db->insert($collection, $input);
-            echo json_encode(['success' => true, 'data' => $result]);
-            break;
-        case 'find':
-            if (empty($collection)) throw new Exception("Collection name required for find");
-            $result = $db->find($collection, $input);
-            echo json_encode(['success' => true, 'data' => $result]);
-            break;
-        case 'update':
-            $count = $db->update($collection, $input['query'] ?? [], $input['update'] ?? []);
-            echo json_encode(['success' => true, 'modified' => $count]);
-            break;
-        case 'delete':
-            $count = $db->delete($collection, $input);
-            echo json_encode(['success' => true, 'deleted' => $count]);
-            break;
-        case 'drop':
-            $db->drop($collection);
-            echo json_encode(['success' => true]);
-            break;
-        default:
-            throw new Exception("Invalid action: " . $action);
+    $db = new JsonDB('db');
+    
+    $action = 'ping';
+    if (isset($_GET['action'])) {
+        $action = $_GET['action'];
     }
-} catch (Throwable $e) {
-    http_response_code(500);
-    echo json_encode([
-        'success' => false,
-        'error' => $e->getMessage(),
-        'file' => basename($e->getFile()),
-        'line' => $e->getLine(),
-        'path' => $e->getFile()
-    ]);
+    
+    $collection = '';
+    if (isset($_GET['collection'])) {
+        $collection = $_GET['collection'];
+    }
+
+    $inputRaw = file_get_contents('php://input');
+    $inputJson = json_decode($inputRaw, true);
+    $input = array();
+    if (is_array($inputJson)) {
+        $input = $inputJson;
+    }
+
+    if ($action == 'ping') {
+        echo json_encode(array('success' => true, 'message' => 'API is online', 'php' => PHP_VERSION));
+    } 
+    else if ($action == 'upload') {
+        if (!isset($_FILES['file'])) {
+            throw new Exception("No file uploaded");
+        }
+        $file = $_FILES['file'];
+        $allowed = array('wav', 'mp4', 'jpg', 'png', 'jpeg');
+        $fileNameParts = explode('.', $file['name']);
+        $ext = strtolower(end($fileNameParts));
+        if (!in_array($ext, $allowed)) {
+            throw new Exception("File type not allowed");
+        }
+        
+        $uploadDir = $basePath . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR;
+        if (!is_dir($uploadDir)) {
+            @mkdir($uploadDir, 0777, true);
+            @chmod($uploadDir, 0777);
+        }
+        
+        $newName = uniqid('media_', true) . '.' . $ext;
+        $target = $uploadDir . $newName;
+        
+        if (move_uploaded_file($file['tmp_name'], $target)) {
+            $protocol = "http";
+            if (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') {
+                $protocol = "https";
+            }
+            $host = $_SERVER['HTTP_HOST'];
+            $reqUri = $_SERVER['REQUEST_URI'];
+            $dirPath = '/db';
+            $url = $protocol . "://" . $host . $dirPath . "/uploads/" . $newName;
+            
+            echo json_encode(array(
+                'success' => true, 
+                'url' => $url, 
+                'filename' => $file['name'], 
+                'size' => $file['size']
+            ));
+        } else {
+            throw new Exception("Failed to move uploaded file.");
+        }
+    }
+    else if ($action == 'list') {
+        $cols = $db->listCollections();
+        echo json_encode(array('success' => true, 'data' => $cols));
+    }
+    else if ($action == 'create') {
+        if (empty($collection)) {
+            throw new Exception("Collection name required");
+        }
+        $db->createCollection($collection);
+        echo json_encode(array('success' => true, 'message' => "Created " . $collection));
+    }
+    else if ($action == 'insert') {
+        if (empty($collection)) {
+            throw new Exception("Collection name required");
+        }
+        $res = $db->insert($collection, $input);
+        echo json_encode(array('success' => true, 'data' => $res));
+    }
+    else if ($action == 'find') {
+        if (empty($collection)) {
+            throw new Exception("Collection name required");
+        }
+        $res = $db->find($collection, $input);
+        echo json_encode(array('success' => true, 'data' => $res));
+    }
+    else if ($action == 'update') {
+        $query = array();
+        if (isset($input['query'])) {
+            $query = $input['query'];
+        }
+        $upd = array();
+        if (isset($input['update'])) {
+            $upd = $input['update'];
+        }
+        $modCount = $db->update($collection, $query, $upd);
+        echo json_encode(array('success' => true, 'modified' => $modCount));
+    }
+    else if ($action == 'delete') {
+        $delCount = $db->delete($collection, $input);
+        echo json_encode(array('success' => true, 'deleted' => $delCount));
+    }
+    else if ($action == 'drop') {
+        $db->drop($collection);
+        echo json_encode(array('success' => true));
+    }
+    else {
+        throw new Exception("Invalid action: " . $action);
+    }
+} catch (Exception $e) {
+    send_api_error_response($e->getMessage());
 }
-?>
 `;
 
 export const NAV_ITEMS = [
