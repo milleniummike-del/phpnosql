@@ -656,10 +656,11 @@ const App: React.FC = () => {
       </div>
 
       <div className="grid grid-cols-1 gap-8">
+        {/* Adjusted labels to correctly match content: PHP_SOURCE_CODE is api.php, API_SOURCE_CODE is JsonDB.php */}
         <div className="bg-slate-950 border border-slate-700 rounded-xl overflow-hidden shadow-xl">
           <div className="bg-slate-900 px-6 py-3 border-b border-slate-700 flex justify-between items-center">
             <span className="font-mono text-emerald-400 flex items-center gap-2">
-              <FileText className="w-4 h-4" /> JsonDB.php
+              <FileText className="w-4 h-4" /> api.php
             </span>
             <button 
               onClick={() => copyToClipboard(PHP_SOURCE_CODE)}
@@ -679,7 +680,7 @@ const App: React.FC = () => {
         <div className="bg-slate-950 border border-slate-700 rounded-xl overflow-hidden shadow-xl">
           <div className="bg-slate-900 px-6 py-3 border-b border-slate-700 flex justify-between items-center">
             <span className="font-mono text-amber-400 flex items-center gap-2">
-              <FileText className="w-4 h-4" /> api.php
+              <FileText className="w-4 h-4" /> JsonDB.php
             </span>
             <button 
               onClick={() => copyToClipboard(API_SOURCE_CODE)}
